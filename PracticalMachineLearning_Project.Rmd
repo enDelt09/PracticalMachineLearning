@@ -1,0 +1,135 @@
+---
+title: "Practical Machine Learning - Course Project"
+author: "Derek Dixon"
+date: "4/1/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background, Prompt, & Data Sets
+
+This is the final course project for the Practical Machine Learning course on Coursera as part of the Data Science Specialization by Johns Hopkins University. 
+Course Prompt:
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+**Training Data:**
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+**Test Data:**
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+**Source:**
+http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+ 
+## Preperation
+
+Setting seeds and loading datasets.
+
+```{r Prep, echo=TRUE, message=FALSE, warning=FALSE}
+
+Sys.info()
+set.seed(314)
+
+trainURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+training <- read.csv(url(trainURL), na.strings = c("NA","#DIV/0!",""))
+testing <- read.csv(url(testURL), na.strings = c("NA","#DIV/0!",""))
+
+
+```
+
+Installing packages and loading libraries.
+
+```{r Packages, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+library(h2o)
+library(ggplot2)
+library(dplyr)
+
+```
+
+
+## Exploring and Tidying the Data
+
+```{r ExploreTidy, echo=TRUE}
+
+str(training)
+
+# Removing the first 7 columns because they aren't necessary for prediction
+training_clean <- training[,8:length(colnames(training))]
+testing_clean <- testing[,8:length(colnames(testing))]
+
+# Removing columns that have 40% or more values as NA
+cntlength <- sapply(training_clean, function(x){
+  sum(!(is.na(x) | x == ""))
+})
+
+nullcol <- names(cntlength[cntlength < 0.6 * length(training_clean$classe)])
+
+training_clean <- training_clean[, !names(training_clean) %in% nullcol]
+
+# Repeating for the test data
+cntlength_test <- sapply(testing_clean, function(x){
+  sum(!(is.na(x) | x == ""))
+})
+
+nullcol_test <- names(cntlength[cntlength < 0.6 * length(testing_clean$classe)])
+
+testing_clean <- testing_clean[, !names(testing_clean) %in% nullcol_test]
+
+```
+
+We can see from the structure of the data that the first 7 columns are not needed, so I remove them from the training and testing data, storing the new sets into "clean" objects. Additionally, I check for and drop all columns that are at least 40% missing values. The 40% is arbitrary.
+
+## Using the H2O package for model selection  
+
+I want to use the h2o package for training multiple models and identifying the best ones for prediction.
+
+```{r loadh2o, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+# Initializes the H2O server
+h2o.init()
+
+# Converting our R data frames into H2O objects
+train_h2o <- as.h2o(training_clean, "train_h2o")
+test_h2o <- as.h2o(testing_clean, "test_h2o")
+
+# Training the models using "classe" as the response and all other columns as predictors
+aml <- h2o.automl(y = "classe",
+                  training_frame = train_h2o,
+                  max_models = 10,
+                  seed = 1)
+
+```
+
+```{r h2o, echo=TRUE}
+
+# Shows the model leaderboard and statistics
+lb <- h2o.get_leaderboard(aml, extra_columns = "ALL")
+print(lb, n = nrow(lb))
+aml@leader
+
+```
+
+The code trains 10 models (the number of models specified), reports the peformance metrics for all on a 5-fold cross-validation of the training data. From the 10 models, it also constructs 2 Stacked Ensemble models, one a best-of-family, and for all models. We can see from the leaderboard that the Stacked Ensemble BestOfFamily model performs the best, having the lowest mean_per_class_error rate on the cross-validation. 
+
+We can now use H2O to predict on the test data.
+
+## Prediction & Summary
+
+```{r Prediction, echo=TRUE}
+
+pred <- h2o.predict(aml, test_h2o)
+print(pred, n = nrow(pred))
+
+```
+
+This output shows that, for each observation, the probability of that observation belonging to a particular class. The model chooses the class for which the probability is greatest.
+
+I expect the out-of-sample error rate to be around ~0.2% as that is about where the model predicts the mean_per_class_error rate to be for the cross-validations. 
+
+I chose to use the H2O package rather than, say, caret, because I wanted to experiment with it's autoML capabilities. It seems to have worked wonderfully.
